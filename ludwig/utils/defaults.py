@@ -35,20 +35,21 @@ default_preprocessing_parameters = {
 }
 default_preprocessing_parameters.update({
     name: base_type.preprocessing_defaults for name, base_type in
-base_type_registry.items()
+    base_type_registry.items()
 })
 
 default_combiner_type = 'concat'
 
 default_training_params = {
     'optimizer': {'type': 'adam'},
-    'epochs': 200,
+    'epochs': 100,
     'regularizer': 'l2',
     'regularization_lambda': 0,
     'learning_rate': 0.001,
     'batch_size': 128,
+    'eval_batch_size': 0,
     'dropout_rate': 0.0,
-    'early_stop': 3,
+    'early_stop': 5,
     'reduce_learning_rate_on_plateau': 0,
     'reduce_learning_rate_on_plateau_patience': 5,
     'reduce_learning_rate_on_plateau_rate': 0.5,
@@ -85,14 +86,14 @@ default_optimizer_params_registry = {
         'l1_regularization_strength': 0.0,
         'l2_regularization_strength': 0.0
     },
-    'momentum': {
-        'momentum': 0.1
-    },
     'ftrl': {
         'learning_rate_power': -0.5,
         'initial_accumulator_value': 0.1,
         'l1_regularization_strength': 0.0,
         'l2_regularization_strength': 0.0
+    },
+    'momentum': {
+        'momentum': 0.1
     },
     'proximalgd': {
         'l1_regularization_strength': 0.0,
@@ -103,6 +104,8 @@ default_optimizer_params_registry = {
         'l1_regularization_strength': 0.0,
         'l2_regularization_strength': 0.0
     },
+    'sgd': {
+    },
     'rmsprop': {
         'decay': 0.9,
         'momentum': 0.0,
@@ -110,6 +113,15 @@ default_optimizer_params_registry = {
         'centered': False
     }
 }
+default_optimizer_params_registry['stochastic_gradient_descent'] = (
+    default_optimizer_params_registry['sgd']
+)
+default_optimizer_params_registry['gd'] = (
+    default_optimizer_params_registry['sgd']
+)
+default_optimizer_params_registry['gradient_descent'] = (
+    default_optimizer_params_registry['sgd']
+)
 
 
 def get_default_optimizer_params(optimizer_type):
@@ -119,7 +131,58 @@ def get_default_optimizer_params(optimizer_type):
         raise ValueError('Incorrect optimizer type: ' + optimizer_type)
 
 
+def _perform_sanity_checks(model_definition):
+    assert 'input_features' in model_definition, (
+        'Model definition does not define any input features'
+    )
+
+    assert 'output_features' in model_definition, (
+        'Model definition does not define any output features'
+    )
+
+    assert isinstance(model_definition['input_features'], list), (
+        'Ludwig expects input features in a list. Check your model '
+        'definition format'
+    )
+
+    assert isinstance(model_definition['output_features'], list), (
+        'Ludwig expects output features in a list. Check your model '
+        'definition format'
+    )
+
+    assert len(model_definition['input_features']) > 0, (
+        'Model definition needs to have at least one input feature'
+    )
+
+    assert len(model_definition['output_features']) > 0, (
+        'Model definition needs to have at least one output feature'
+    )
+
+    if 'training' in model_definition:
+        assert isinstance(model_definition['training'], dict), (
+            'There is an issue while reading the training section of the '
+            'model definition. The parameters are expected to be'
+            'read as a dictionary. Please check your model definition format.'
+        )
+
+    if 'preprocessing' in model_definition:
+        assert isinstance(model_definition['preprocessing'], dict), (
+            'There is an issue while reading the preprocessing section of the '
+            'model definition. The parameters are expected to be read'
+            'as a dictionary. Please check your model definition format.'
+        )
+
+    if 'combiner' in model_definition:
+        assert isinstance(model_definition['combiner'], dict), (
+            'There is an issue while reading the combiner section of the '
+            'model definition. The parameters are expected to be read'
+            'as a dictionary. Please check your model definition format.'
+        )
+
+
 def merge_with_defaults(model_definition):
+    _perform_sanity_checks(model_definition)
+
     # ===== Preprocessing =====
     model_definition['preprocessing'] = merge_dict(
         default_preprocessing_parameters,
@@ -143,16 +206,14 @@ def merge_with_defaults(model_definition):
     # ===== Training =====
     set_default_value(model_definition, 'training', default_training_params)
 
-    for param in default_training_params:
+    for param, value in default_training_params.items():
         set_default_value(model_definition['training'], param,
-                          default_training_params[param])
-
-    if len(model_definition['output_features']) == 0:
-        raise ValueError('No output features are defined')
+                          value)
 
     set_default_value(
         model_definition['training'],
         'validation_measure',
+
         output_type_registry[model_definition['output_features'][0][
             'type']].default_validation_measure
     )

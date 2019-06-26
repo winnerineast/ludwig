@@ -16,14 +16,21 @@
 import tensorflow as tf
 
 
-def optimize(loss, training_parameters, learning_rate, global_step,
-             horovod=None):
-    if training_parameters is not None and training_parameters['decay'] == True:
+def optimize(
+        loss,
+        training_parameters,
+        learning_rate,
+        global_step,
+        horovod=None
+):
+    if training_parameters is not None and training_parameters['decay'] is True:
         learning_rate = tf.train.exponential_decay(
             learning_rate, global_step,
             training_parameters['decay_steps'],
             training_parameters['decay_rate'],
             staircase=training_parameters['staircase'])
+
+    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
     with tf.variable_scope('optimizer'):
         if training_parameters is not None:
@@ -58,6 +65,8 @@ def optimize(loss, training_parameters, learning_rate, global_step,
 
             optimize = optimizer.minimize(loss,
                                           global_step=global_step)
+
+    optimize = tf.group([optimize, update_ops])
 
     return optimize, learning_rate
 

@@ -30,6 +30,7 @@ import sys
 sys.path.append("../")
 
 import ludwig
+from ludwig.api import LudwigModel
 
 EXCLUDE = {}
 
@@ -73,7 +74,7 @@ PAGES = [
     {
         'page': 'api.md',
         'classes': [
-            (ludwig.api.LudwigModel, "*")
+            (LudwigModel, "*")
         ]
     },
     # {
@@ -100,7 +101,7 @@ def get_function_signature(function, method=True):
     else:
         signature = inspect.getargspec(wrapped)
     defaults = signature.defaults
-    if method:
+    if method and len(signature.args) > 0 and signature.args[0] == 'self':
         args = signature.args[1:]
     else:
         args = signature.args

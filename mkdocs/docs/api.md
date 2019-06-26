@@ -1,4 +1,4 @@
-<span style="float:right;">[[source]](https://github.com/uber/ludwig/blob/master/ludwig.py#L64)</span>
+<span style="float:right;">[[source]](https://github.com/uber/ludwig/blob/master/ludwig.py#L67)</span>
 # LudwigModel class
 
 ```python
@@ -16,8 +16,8 @@ __Inputs__
 
 - __model_definition__ (dict): a dictionary containing information needed
    to build a model. Refer to the [User Guide]
-   (http://ludwig.ai/user-guide/m#model-definition) for details.
-- __model_definition_file__ (string, optional, default: `Mone`): path to
+   (http://ludwig.ai/user_guide/#model-definition) for details.
+- __model_definition_file__ (string, optional, default: `None`): path to
    a YAML file containing the model definition. If available it will be
    used instead of the model_definition dict.
 - __logging_level__ (int, default: `logging.ERROR`): logging level to use
@@ -30,7 +30,7 @@ __Example usage:__
 
 
 ```python
-from ludwig import LudwigModel
+from ludwig.api import LudwigModel
 ```
 
 Train a model:
@@ -47,7 +47,7 @@ or
 train_stats = ludwig_model.train(data_df=dataframe)
 ```
 
-If you have already trained a model you cal load it and use it to predict
+If you have already trained a model you can load it and use it to predict
 
 ```python
 ludwig_model = LudwigModel.load(model_dir)
@@ -56,13 +56,13 @@ ludwig_model = LudwigModel.load(model_dir)
 Predict:
 
 ```python
-predictions = ludwig_model.predict(dataset_csv=csv_file_path)
+predictions = ludwig_model.predict(data_csv=csv_file_path)
 ```
 
 or
 
 ```python
-predictions = ludwig_model.predict(dataset_df=dataframe)
+predictions = ludwig_model.predict(data_df=dataframe)
 ```
 
 Finally in order to release resources:
@@ -138,6 +138,7 @@ __Inputs__
 
 ```python
 load(
+  model_dir,
   logging_level=40
 )
 ```
@@ -161,7 +162,7 @@ __Inputs__
 __Return__
 
 
-- __return__ ( a LudwigModel obje): a LudwigModel object
+- __return__ (LudwigModel): a LudwigModel object
 
 
 __Example usage__
@@ -254,7 +255,7 @@ save(
 ```
 
 
-This function allows for loading pretrained models
+This function allows to save models on disk
 
 __Inputs__
 
@@ -371,16 +372,20 @@ train(
   data_train_hdf5=None,
   data_validation_hdf5=None,
   data_test_hdf5=None,
+  data_dict=None,
   train_set_metadata_json=None,
+  experiment_name='api_experiment',
   model_name='run',
   model_load_path=None,
   model_resume_path=None,
-  skip_save_progress_weights=False,
-  dataset_type='generic',
+  skip_save_model=False,
+  skip_save_progress=False,
+  skip_save_log=False,
   skip_save_processed_input=False,
   output_directory='results',
   gpus=None,
   gpu_fraction=1.0,
+  use_horovod=False,
   random_seed=42,
   logging_level=40,
   debug=False
@@ -423,24 +428,44 @@ __Inputs__
    intermediate preprocess  version of the input CSV created the
    first time a CSV file is used in the same directory with the same
    name and a hdf5 extension
+- __data_dict__ (dict): input data dictionary. It is expected to
+   contain one key for each field and the values have to be lists of
+   the same length. Each index in the lists corresponds to one
+   datapoint. For example a data set consisting of two datapoints
+   with a text and a class may be provided as the following dict
+   ``{'text_field_name': ['text of the first datapoint', text of the
+   second datapoint'], 'class_filed_name': ['class_datapoints_1',
+   'class_datapoints_2']}`.
 - __train_set_metadata_json__ (string): input metadata JSON file. It is an
    intermediate preprocess file containing the mappings of the input
    CSV created the first time a CSV file is used in the same
    directory with the same name and a json extension
-- __model_name__ (string): a name for the model, user for the save
+- __experiment_name__ (string): a name for the experiment, used for the save
+   directory
+- __model_name__ (string): a name for the model, used for the save
    directory
 - __model_load_path__ (string): path of a pretrained model to load as
    initialization
 - __model_resume_path__ (string): path of a the model directory to
    resume training of
-- __skip_save_progress_weights__ (bool, default: `False`): doesn't save
-   weights after each epoch. By default Ludwig saves weights after
-   each epoch for enabling resuming of training, but if the model is
-   really big that can be time consuming and will save twice as much
-   space, use this parameter to skip it.
-- __dataset_type__ (string, default: `'default'`): determines the type
-   of preprocessing will be applied to the data. Only `generic` is
-   available at the moment
+- __skip_save_model__ (bool, default: `False`): disables
+   saving model weights and hyperparameters each time the model
+   improves. By default Ludwig saves model weights after each epoch
+   the validation measure imrpvoes, but if the model is really big
+   that can be time consuming if you do not want to keep
+   the weights and just find out what performance can a model get
+   with a set of hyperparameters, use this parameter to skip it,
+   but the model will not be loadable later on.
+- __skip_save_progress__ (bool, default: `False`): disables saving
+   progress each epoch. By default Ludwig saves weights and stats
+   after each epoch for enabling resuming of training, but if
+   the model is really big that can be time consuming and will uses
+   twice as much space, use this parameter to skip it, but training
+   cannot be resumed later on.
+- __skip_save_log__ (bool, default: `False`): disables saving TensorBoard
+   logs. By default Ludwig saves logs for the TensorBoard, but if it
+   is not needed turning it off can slightly increase the
+   overall speed.
 - __skip_save_processed_input__ (bool, default: `False`): skips saving
    intermediate HDF5 and JSON files
 - __output_directory__ (string, default: `'results'`): directory that
@@ -520,7 +545,7 @@ __Inputs__
    the same length. Each index in the lists corresponds to one 
    datapoint. For example a data set consisting of two datapoints 
    with a text and a class may be provided as the following dict 
-   ``{'text_field_name}: ['text of the first datapoint', text of the 
+   ``{'text_field_name': ['text of the first datapoint', text of the
    second datapoint'], 'class_filed_name': ['class_datapoints_1', 
    'class_datapoints_2']}`.
 - __batch_size__ (int): the batch size to use for training. By default 

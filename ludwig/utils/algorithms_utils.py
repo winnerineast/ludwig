@@ -17,6 +17,9 @@
 import logging
 
 
+logger = logging.getLogger(__name__)
+
+
 def topological_sort(graph_unsorted):
     """
     Repeatedly go through all of the nodes in the graph, moving each of
@@ -39,7 +42,7 @@ def topological_sort(graph_unsorted):
     while graph_unsorted:
 
         # Go through each of the node/edges pairs in the unsorted
-        # graph. If a set of edges doesn't contain any nodes that
+        # graph. If a set of edges does not contain any nodes that
         # haven't been resolved, that is, that are still in the
         # unsorted graph, remove the pair from the unsorted graph,
         # and append it to the sorted graph. Note here that by using
@@ -97,8 +100,8 @@ if __name__ == '__main__':
                       (10, []),
                       (8, [9]),
                       (3, [10, 8])]
-    logging.info(topological_sort(graph_unsorted))
+    logger.info(topological_sort(graph_unsorted))
     graph_unsorted = [('macro', ['action', 'contact_type']),
                       ('contact_type', None),
                       ('action', ['contact_type'])]
-    logging.info(topological_sort(graph_unsorted))
+    logger.info(topological_sort(graph_unsorted))

@@ -15,7 +15,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 setup(
     name='ludwig',
 
-    version='0.1.0',
+    version='0.1.2',
 
     description='A deep learning experimentation toolbox',
     long_description=long_description,
@@ -40,16 +40,16 @@ setup(
     install_requires=['Cython>=0.25',
                       'h5py>=2.6',
                       'matplotlib>=3.0',
-                      'numpy>=1.12',
+                      'numpy>=1.15',
                       'pandas>=0.19',
                       'scipy>=0.18',
                       'scikit-learn',
-                      'scikit-image',
+                      'scikit-image==0.14.2',
                       'seaborn>=0.7',
-                      'spacy>=2.0',
+                      'spacy>=2.1',
                       'tqdm',
                       'tabulate>=0.7',
-                      'tensorflow>=1.12',
+                      'tensorflow==1.13.1',
                       'PyYAML>=3.12'
                       ],
 

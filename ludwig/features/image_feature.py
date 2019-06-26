@@ -20,7 +20,6 @@ import os
 import h5py
 import numpy as np
 import tensorflow as tf
-
 from skimage.io import imread
 
 from ludwig.constants import *
@@ -28,9 +27,14 @@ from ludwig.features.base_feature import BaseFeature
 from ludwig.features.base_feature import InputFeature
 from ludwig.models.modules.image_encoders import ResNetEncoder
 from ludwig.models.modules.image_encoders import Stacked2DCNN
+from ludwig.utils.image_utils import get_abs_path, greyscale
+from ludwig.utils.image_utils import num_channels_in_image
 from ludwig.utils.image_utils import resize_image
 from ludwig.utils.misc import get_from_registry
 from ludwig.utils.misc import set_default_value
+
+
+logger = logging.getLogger(__name__)
 
 
 class ImageBaseFeature(BaseFeature):
@@ -39,12 +43,84 @@ class ImageBaseFeature(BaseFeature):
         self.type = IMAGE
 
     preprocessing_defaults = {
-        'missing_value_strategy': BACKFILL
+        'missing_value_strategy': BACKFILL,
+        'in_memory': True,
+        'resize_method': 'interpolate'
     }
 
     @staticmethod
     def get_feature_meta(column, preprocessing_parameters):
-        return {}
+        return {
+            'preprocessing': preprocessing_parameters
+        }
+
+    @staticmethod
+    def _read_image_and_resize(filepath,
+                               img_width,
+                               img_height,
+                               should_resize,
+                               num_channels,
+                               resize_method,
+                               user_specified_num_channels):
+        """
+        :param filepath: path to the image
+        :param img_width: expected width of the image
+        :param img_height: expected height of the image
+        :param should_resize: Should the image be resized?
+        :param resize_method: type of resizing method
+        :param num_channels: expected number of channels in the first image
+        :param user_specified_num_channels: did the user specify num channels?
+        :return: image object
+
+        Helper method to read and resize an image according to model defn.
+        If the user doesn't specify a number of channels, we use the first image
+        in the dataset as the source of truth. If any image in the dataset
+        doesn't have the same number of channels as the first image,
+        raise an exception.
+
+        If the user specifies a number of channels, we try to convert all the
+        images to the specifications by dropping channels/padding 0 channels
+        """
+
+        img = imread(filepath)
+        img_num_channels = num_channels_in_image(img)
+        if img_num_channels == 1:
+            img = img.reshape((img.shape[0], img.shape[1], 1))
+
+        if should_resize:
+            img = resize_image(img, (img_height, img_width), resize_method)
+
+        if user_specified_num_channels is True:
+
+            # convert to greyscale if needed
+            if num_channels == 1 and (
+                    img_num_channels == 3 or img_num_channels == 4):
+                img = greyscale(img)
+                img_num_channels = 1
+
+            # Number of channels is specified by the user
+            img_padded = np.zeros((img_height, img_width, num_channels))
+            min_num_channels = min(num_channels, img_num_channels)
+            img_padded[:, :, :min_num_channels] = img[:, :, :min_num_channels]
+            img = img_padded
+
+            if img_num_channels != num_channels:
+                logger.warning(
+                    "Image {0} has {1} channels, where as {2}"
+                    " channels are expected. Dropping/adding channels"
+                    "with 0s as appropriate".format(
+                        filepath, img_num_channels, num_channels))
+        else:
+            # If the image isn't like the first image, raise exception
+            if img_num_channels != num_channels:
+                raise ValueError(
+                    'Image {0} has {1} channels, unlike the first image, which'
+                    ' has {2} channels. Make sure all the iamges have the same'
+                    'number of channels or use the num_channels property in'
+                    'image preprocessing'.format(filepath,
+                                                 img_num_channels,
+                                                 num_channels))
+        return img
 
     @staticmethod
     def add_feature_data(
@@ -54,78 +130,129 @@ class ImageBaseFeature(BaseFeature):
             metadata,
             preprocessing_parameters
     ):
-        csv_path = os.path.dirname(os.path.abspath(dataset_df.csv))
-        an_image = imread(
-            os.path.join(csv_path, dataset_df[feature['name']][0])
+        set_default_value(
+            feature['preprocessing'],
+            'in_memory',
+            preprocessing_parameters['in_memory']
         )
-        im_height = an_image.shape[0]
-        im_width = an_image.shape[1]
 
-        if an_image.ndim == 2:
-            num_channels = 1
-        else:
-            num_channels = an_image.shape[2]
+        csv_path = None
+        if hasattr(dataset_df, 'csv'):
+            csv_path = os.path.dirname(os.path.abspath(dataset_df.csv))
 
         num_images = len(dataset_df)
+        if num_images == 0:
+            raise ValueError('There are no images in the dataset provided.')
 
-        if feature['should_resize']:
-            im_height = feature[HEIGHT]
-            im_width = feature[WIDTH]
+        height = 0
+        width = 0
+        should_resize = False
+        if ('height' in preprocessing_parameters or
+                'width' in preprocessing_parameters):
+            should_resize = True
+            try:
+                height = int(preprocessing_parameters[HEIGHT])
+                width = int(preprocessing_parameters[WIDTH])
+            except ValueError as e:
+                raise ValueError(
+                    'Image height and width must be set and have '
+                    'positive integer values: ' + str(e)
+                )
+            if height <= 0 or width <= 0:
+                raise ValueError(
+                    'Image height and width must be positive integers'
+                )
 
-        metadata[feature['name']] = {
-            'height': im_height,
-            'width': im_width,
-            'num_channels': num_channels,
-            'in_memory': feature['in_memory']
-        }
+        # here if a width and height have not been specified
+        # we assume that all images have the same width and height
+        # thus the width and height of the first one are the same
+        # of all the other ones
+        if (csv_path is None and
+                not os.path.isabs(dataset_df[feature['name']][0])):
+            raise ValueError(
+                'Image file paths must be absolute'
+            )
 
-        if feature['in_memory']:
+        first_image = imread(
+            get_abs_path(
+                csv_path,
+                dataset_df[feature['name']][0]
+            )
+        )
+
+        first_img_height = first_image.shape[0]
+        first_img_width = first_image.shape[1]
+        first_img_num_channels = num_channels_in_image(first_image)
+
+        if height == 0 or width == 0:
+            # User hasn't specified height and width
+            height = first_img_height
+            width = first_img_width
+
+        # User specified num_channels in the model/feature definition
+        user_specified_num_channels = False
+        num_channels = first_img_num_channels
+        if NUM_CHANNELS in preprocessing_parameters:
+            user_specified_num_channels = True
+            num_channels = preprocessing_parameters[NUM_CHANNELS]
+
+        assert isinstance(num_channels, int), ValueError(
+            'Number of image channels needs to be an integer')
+
+        metadata[feature['name']]['preprocessing']['height'] = height
+        metadata[feature['name']]['preprocessing']['width'] = width
+        metadata[feature['name']]['preprocessing'][
+            'num_channels'] = num_channels
+
+        if feature['preprocessing']['in_memory']:
             data[feature['name']] = np.empty(
-                (num_images, im_height, im_width, num_channels),
+                (num_images, height, width, num_channels),
                 dtype=np.int8
             )
             for i in range(len(dataset_df)):
-                filename = os.path.join(
+                filepath = get_abs_path(
                     csv_path,
                     dataset_df[feature['name']][i]
                 )
-                img = imread(filename)
-                if img.ndim == 2:
-                    img = img.reshape((img.shape[0], img.shape[1], 1))
-                if feature['should_resize']:
-                    img = resize_image(
-                        img,
-                        (im_height, im_width),
-                        feature['resize_method']
-                    )
+
+                img = ImageBaseFeature._read_image_and_resize(
+                    filepath,
+                    width,
+                    height,
+                    should_resize,
+                    num_channels,
+                    preprocessing_parameters['resize_method'],
+                    user_specified_num_channels
+                )
                 data[feature['name']][i, :, :, :] = img
         else:
-            data_fp = dataset_df.csv.replace('csv', 'hdf5')
+            data_fp = os.path.splitext(dataset_df.csv)[0] + '.hdf5'
             mode = 'w'
             if os.path.isfile(data_fp):
                 mode = 'r+'
             with h5py.File(data_fp, mode) as h5_file:
                 image_dataset = h5_file.create_dataset(
                     feature['name'] + '_data',
-                    (num_images, im_height, im_width, num_channels),
+                    (num_images, height, width, num_channels),
                     dtype=np.uint8
                 )
                 for i in range(len(dataset_df)):
-                    filename = os.path.join(
+                    filepath = get_abs_path(
                         csv_path,
                         dataset_df[feature['name']][i]
                     )
-                    img = imread(filename)
-                    if img.ndim == 2:
-                        img = img.reshape((img.shape[0], img.shape[1], 1))
-                    if feature['should_resize']:
-                        img = resize_image(
-                            img,
-                            (im_height, im_width),
-                            feature['resize_method'],
-                        )
 
-                    image_dataset[i, :im_height, :im_width, :] = img
+                    img = ImageBaseFeature._read_image_and_resize(
+                        filepath,
+                        width,
+                        height,
+                        should_resize,
+                        num_channels,
+                        preprocessing_parameters['resize_method'],
+                        user_specified_num_channels
+                    )
+
+                    image_dataset[i, :height, :width, :] = img
 
             data[feature['name']] = np.arange(num_images)
 
@@ -134,14 +261,9 @@ class ImageInputFeature(ImageBaseFeature, InputFeature):
     def __init__(self, feature):
         super().__init__(feature)
 
-        self.should_resize = False
-
         self.height = 0
         self.width = 0
         self.num_channels = 0
-
-        self.in_memory = True
-        self.data_hdf5_fp = ''
 
         self.encoder = 'stacked_cnn'
 
@@ -171,7 +293,7 @@ class ImageInputFeature(ImageBaseFeature, InputFeature):
             **kwargs
     ):
         placeholder = self._get_input_placeholder()
-        logging.debug('  targets_placeholder: {0}'.format(placeholder))
+        logger.debug('  targets_placeholder: {0}'.format(placeholder))
 
         feature_representation, feature_representation_size = self.encoder_obj(
             placeholder,
@@ -179,7 +301,7 @@ class ImageInputFeature(ImageBaseFeature, InputFeature):
             dropout_rate,
             is_training,
         )
-        logging.debug(
+        logger.debug(
             '  feature_representation: {0}'.format(feature_representation)
         )
 
@@ -200,35 +322,12 @@ class ImageInputFeature(ImageBaseFeature, InputFeature):
             **kwargs
     ):
         for dim in ['height', 'width', 'num_channels']:
-            input_feature[dim] = feature_metadata[dim]
-        input_feature['data_hdf5_fp'] = (
-            kwargs['model_definition']['data_hdf5_fp']
-        )
+            input_feature[dim] = feature_metadata['preprocessing'][dim]
 
     @staticmethod
     def populate_defaults(input_feature):
-        set_default_value(input_feature, 'in_memory', True)
-
-        if 'height' in input_feature or 'width' in input_feature:
-            input_feature['should_resize'] = True
-            try:
-                input_feature[HEIGHT] = int(input_feature[HEIGHT])
-                input_feature[WIDTH] = int(input_feature[WIDTH])
-            except ValueError as e:
-                raise ValueError(
-                    'Image height and width must be set and have '
-                    'positive integer values: ' + str(e)
-                )
-            if input_feature[HEIGHT] <= 0 or input_feature[WIDTH] <= 0:
-                raise ValueError(
-                    'Image height and width must be positive integers'
-                )
-            input_feature['should_resize'] = True
-            set_default_value(input_feature, 'resize_method', 'crop_or_pad')
-        else:
-            input_feature['should_resize'] = False
-
         set_default_value(input_feature, 'tied_weights', None)
+        set_default_value(input_feature, 'preprocessing', {})
 
 
 image_encoder_registry = {

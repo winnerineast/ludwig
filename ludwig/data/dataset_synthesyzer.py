@@ -15,7 +15,6 @@
 # limitations under the License.
 # ==============================================================================
 import argparse
-import csv
 import os
 import random
 import string
@@ -25,6 +24,7 @@ import numpy as np
 import yaml
 from skimage.io import imsave
 
+from ludwig.utils.data_utils import save_csv
 from ludwig.utils.misc import get_from_registry
 
 letters = string.ascii_letters
@@ -91,7 +91,7 @@ def build_synthetic_dataset(dataset_size, features):
 def generate_datapoint(features):
     datapoint = []
     for feature in features:
-        if ('cycle' in feature and feature['cycle'] == True and
+        if ('cycle' in feature and feature['cycle'] is True and
                 feature['type'] in cyclers_registry):
             cycler_function = cyclers_registry[feature['type']]
             feature_value = cycler_function(feature)
@@ -170,9 +170,9 @@ def generate_timeseries(feature):
 
 def generate_image(feature):
     # Read num_channels, width, height
-    num_channels = feature['num_channels']
-    width = feature['width']
-    height = feature['height']
+    num_channels = feature['preprocessing']['num_channels']
+    width = feature['preprocessing']['width']
+    height = feature['preprocessing']['height']
     image_dest_folder = feature['destination_folder']
 
     if width <= 0 or height <= 0 or num_channels < 1:
@@ -244,14 +244,6 @@ cyclers_registry = {
     'binary': cycle_binary
 }
 
-
-def write_csv(dataset, csv_file_path):
-    with open(csv_file_path, 'w') as file:
-        writer = csv.writer(file)
-        for row in dataset:
-            writer.writerow(row)
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='This script generates a synthetic dataset.')
@@ -284,9 +276,9 @@ if __name__ == '__main__':
           {name: timeseries_1, type: timeseries, max_len: 20}, \
           {name: timeseries_2, type: timeseries, max_len: 20}, \
           ]',
-        type=yaml.load, help='dataset features'
+        type=yaml.safe_load, help='dataset features'
     )
     args = parser.parse_args()
 
     dataset = build_synthetic_dataset(args.dataset_size, args.features)
-    write_csv(dataset, args.csv_file_path)
+    save_csv(args.csv_file_path, dataset)

@@ -22,8 +22,6 @@
 
     <!-- CSS
    ================================================== -->
-    <link href="assets/stylesheets/application.572ca0f0.css" rel="stylesheet">
-    <link href="assets/stylesheets/application-palette.22915126.css" rel="stylesheet">
     <link href="assets/fonts/material-icons.css" rel="stylesheet">
     <link href="stylesheets/extra.css" rel="stylesheet">
     <link href="stylesheets/monokai.css" rel="stylesheet">
@@ -349,13 +347,13 @@
 
     <div class="row">
         <div class="col-full">
-            <h1 class="intro-header" data-aos="fade-up">Programatic API</h1>
+            <h1 class="intro-header" data-aos="fade-up">Programmatic API</h1>
 
             <p class="lead" data-aos="fade-up">
                 Train models and use them to predict directly from Python
             </p>
 
-            <pre data-aos="fade-up"><code>from ludwig import LudwigModel
+            <pre data-aos="fade-up"><code>from ludwig.api import LudwigModel
 
 # train a model
 model_definition = {...}
@@ -382,37 +380,44 @@ predictions = model.predict(test_dataframe)</code></pre>
 ================================================== -->
 <footer class="md-footer">
 
-    <div class="md-footer-nav">
+    <!-- Link to previous and/or next page -->
+
+
+    <div class="md-footer-nav md-footer-nav-wrapper">
         <nav class="md-footer-nav__inner md-grid">
 
+            <!-- Link to next page -->
 
-            <a class="md-flex md-footer-nav__link md-footer-nav__link--next" href="getting_started/"
-               rel="next" title="Getting Started">
-                <div class="md-flex__cell md-flex__cell--stretch md-footer-nav__title">
-              <span class="md-flex__ellipsis">
-                <span class="md-footer-nav__direction">
+            <a class="md-flex md-footer-nav__link md-footer-nav__link--next md-footer-nav__link-wrapper" href="getting_started/" rel="next"
+               title="Examples">
+                <div class="md-flex__cell md-flex__cell--stretch
+                  md-footer-nav__title md-flex__cell-wrapper">
+              <span class="md-flex__ellipsis md-flex__ellipsis-wrapper">
+                <span class="md-footer-nav__direction md-footer-nav-item md-footer-nav-item-wrapper">
                   Next
                 </span>
-                Getting Started
+                <span class="md-footer-nav-item-wrapper md-footer-nav-item-title-wrapper">Getting Started</span>
               </span>
                 </div>
-                <div class="md-flex__cell md-flex__cell--shrink">
-                    <i class="md-icon md-icon--arrow-forward md-footer-nav__button"></i>
+                <div class="md-flex__cell md-flex__cell--shrink md-flex__cell-arrow">
+                    <i class="fa fa-arrow-right arrow-wrapper"></i>
                 </div>
             </a>
 
         </nav>
     </div>
 
+
+    <!-- Further information -->
     <div class="md-footer-meta md-typeset">
         <div class="md-footer-meta__inner md-grid">
-            <div class="md-footer-copyright">
 
+            <!-- Copyright and theme information -->
+            <div class="md-footer-copyright md-footer-copyright-wrapper">
                 <div class="footer-logo-smallpad"></div>
-                <!--<a href="htto://github.com/uber/ludwig"><i class="fa fa-github"></i></a>-->
 
-                <div class="md-footer-copyright__highlight">
-                    Copyright © 2019 Uber Technologies Inc.
+                <div class="md-footer-copyright__highlight md-footer-copyright__highlight-wrapper">
+                    Copyright © 2018 - 2019 Uber Technologies Inc.
                 </div>
 
                 Website by <a href="http://w4nderlu.st">w4nderlust</a> powered by
@@ -420,12 +425,14 @@ predictions = model.predict(test_dataframe)</code></pre>
                 <a href="https://squidfunk.github.io/mkdocs-material/">Material for MkDocs</a>,
                 <a href="http://www.styleshout.com/">styleshout</a> and
                 <a href="http://cables.gl/">cables</a>.
-                </div>
+            </div>
+
+            <!-- Social links -->
+
 
 
         </div>
     </div>
-
 </footer>
 
 <div id="preloader">
@@ -446,8 +453,27 @@ predictions = model.predict(test_dataframe)</code></pre>
 <script>
     function detect_webgl2() {
         var canvas = document.createElement("canvas");
-        var gl = canvas.getContext("webgl2");
-        return gl != null;
+        try {
+            var context = canvas.getContext("webgl2");
+            if (context && typeof context.getParameter == "function") {
+                    return true;
+            }
+        } catch(e) {}
+        return false;
+    }
+
+    function detect_webgl() {
+        var canvas = document.createElement("canvas");
+        names = ["webgl", "experimental-webgl", "moz-webgl", "webkit-3d"];
+        for(var i = 0; i < names.length; i++) {
+            try {
+                context = canvas.getContext(names[i]);
+                if (context && typeof context.getParameter == "function") {
+                    return true;
+                }
+            } catch(e) {}
+        }
+        return false;
     }
 
     /**
@@ -470,9 +496,23 @@ predictions = model.predict(test_dataframe)</code></pre>
     }
 
     if (detect_webgl2()) {
+            console.log("webgl2 support");
             document.addEventListener('DOMContentLoaded', function (event) {
                 CABLES.patch = new CABLES.Patch({
-                    patchFile: 'https://raw.githubusercontent.com/uber/ludwig/master/docs/js/Ludwig.json',
+                    patchFile: 'https://raw.githubusercontent.com/uber/ludwig/master/docs/js/Ludwig_webgl2.json',
+                    prefixAssetPath: '',
+                    glCanvasId: 'glcanvas',
+                    glCanvasResizeToWindow: true,
+                    onError: showError,
+                    onPatchLoaded: patchInitialized,
+                    onFinishedLoading: patchFinishedLoading,
+                });
+            });
+    } else if (detect_webgl()) {
+        console.log("webgl support");
+        document.addEventListener('DOMContentLoaded', function (event) {
+                CABLES.patch = new CABLES.Patch({
+                    patchFile: 'https://raw.githubusercontent.com/uber/ludwig/master/docs/js/Ludwig_webgl1.json',
                     prefixAssetPath: '',
                     glCanvasId: 'glcanvas',
                     glCanvasResizeToWindow: true,
@@ -482,7 +522,7 @@ predictions = model.predict(test_dataframe)</code></pre>
                 });
             });
     } else {
-        console.log("No webgl2 support")
+        console.log("No webgl support");
     }
 
 </script>

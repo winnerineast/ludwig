@@ -36,6 +36,9 @@ from ludwig.utils.metrics_utils import roc_curve
 from ludwig.utils.misc import set_default_value
 
 
+logger = logging.getLogger(__name__)
+
+
 class BinaryBaseFeature(BaseFeature):
     def __init__(self, feature):
         super().__init__(feature)
@@ -59,7 +62,7 @@ class BinaryBaseFeature(BaseFeature):
             preprocessing_parameters=None
     ):
         data[feature['name']] = dataset_df[feature['name']].astype(
-            np.bool_).as_matrix()
+            np.bool_).values
 
 
 class BinaryInputFeature(BinaryBaseFeature, InputFeature):
@@ -83,12 +86,12 @@ class BinaryInputFeature(BinaryBaseFeature, InputFeature):
             **kwargs
     ):
         placeholder = self._get_input_placeholder()
-        logging.debug('  placeholder: {0}'.format(placeholder))
+        logger.debug('  placeholder: {0}'.format(placeholder))
 
         feature_representation = tf.expand_dims(
             tf.cast(placeholder, tf.float32), 1)
 
-        logging.debug('  feature_representation: {0}'.format(
+        logger.debug('  feature_representation: {0}'.format(
             feature_representation))
 
         feature_representation = {
@@ -153,13 +156,13 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
                 initializer=initializer_obj([hidden_size, 1]),
                 regularizer=regularizer
             )
-            logging.debug('  regression_weights: {0}'.format(weights))
+            logger.debug('  regression_weights: {0}'.format(weights))
 
             biases = tf.get_variable('biases', [1])
-            logging.debug('  regression_biases: {0}'.format(biases))
+            logger.debug('  regression_biases: {0}'.format(biases))
 
             logits = tf.reshape(tf.matmul(hidden, weights) + biases, [-1])
-            logging.debug('  logits: {0}'.format(logits))
+            logger.debug('  logits: {0}'.format(logits))
 
             probabilities = tf.nn.sigmoid(
                 logits,
@@ -177,7 +180,7 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
     def _get_loss(self, targets, logits, probabilities):
         with tf.variable_scope('loss_{}'.format(self.name)):
             train_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.to_float(targets), logits=logits)
+                labels=tf.cast(targets, tf.float32), logits=logits)
 
             if self.loss['robust_lambda'] > 0:
                 train_loss = ((1 - self.loss['robust_lambda']) * train_loss +
@@ -217,7 +220,7 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
 
         # ================ Placeholder ================
         targets = self._get_output_placeholder()
-        logging.debug('  targets_placeholder: {0}'.format(targets))
+        logger.debug('  targets_placeholder: {0}'.format(targets))
         output_tensors[self.name] = targets
 
         # ================ Predictions ================

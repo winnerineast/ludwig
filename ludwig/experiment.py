@@ -20,31 +20,24 @@ from __future__ import print_function
 
 import argparse
 import logging
-import os
 import sys
-from pprint import pformat
-
 import yaml
 
+from ludwig.contrib import contrib_command
 from ludwig.data.postprocessing import postprocess
-from ludwig.data.preprocessing import preprocess_for_training
 from ludwig.globals import LUDWIG_VERSION, set_on_master, is_on_master
-from ludwig.globals import TRAIN_SET_METADATA_FILE_NAME
-from ludwig.models.modules.measure_modules import get_best_function
 from ludwig.predict import predict
-from ludwig.predict import print_prediction_results
+from ludwig.predict import print_test_results
 from ludwig.predict import save_prediction_outputs
-from ludwig.predict import save_prediction_statistics
-from ludwig.train import get_experiment_dir_name
-from ludwig.train import get_file_names
-from ludwig.train import train
-from ludwig.train import update_model_definition_with_metadata
-from ludwig.utils.data_utils import save_json
+from ludwig.predict import save_test_statistics
+from ludwig.train import full_train
 from ludwig.utils.defaults import default_random_seed
-from ludwig.utils.defaults import merge_with_defaults
-from ludwig.utils.misc import get_experiment_description
 from ludwig.utils.print_utils import logging_level_registry
 from ludwig.utils.print_utils import print_ludwig
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 def experiment(
@@ -63,7 +56,9 @@ def experiment(
         model_name='run',
         model_load_path=None,
         model_resume_path=None,
-        skip_save_progress_weights=False,
+        skip_save_model=False,
+        skip_save_progress=False,
+        skip_save_log=False,
         skip_save_processed_input=False,
         skip_save_unprocessed_output=False,
         output_directory='results',
@@ -124,10 +119,27 @@ def experiment(
            far are also resumed effectively cotinuing a previously interrupted
            training process.
     :type model_resume_path: filepath (str)
-    :param skip_save_progress_weights: Skips saving the weights at the end of
-           each epoch. If this is true, training cannot be resumed from the
-           exactly the state at the end of the previous epoch.
-    :type skip_save_progress_weights: Boolean
+    :param skip_save_model: Disables
+               saving model weights and hyperparameters each time the model
+           improves. By default Ludwig saves model weights after each epoch
+           the validation measure imrpvoes, but if the model is really big
+           that can be time consuming if you do not want to keep
+           the weights and just find out what performance can a model get
+           with a set of hyperparameters, use this parameter to skip it,
+           but the model will not be loadable later on.
+    :type skip_save_model: Boolean
+    :param skip_save_progress: Disables saving
+           progress each epoch. By default Ludwig saves weights and stats
+           after each epoch for enabling resuming of training, but if
+           the model is really big that can be time consuming and will uses
+           twice as much space, use this parameter to skip it, but training
+           cannot be resumed later on.
+    :type skip_save_progress: Boolean
+    :param skip_save_log: Disables saving TensorBoard
+           logs. By default Ludwig saves logs for the TensorBoard, but if it
+           is not needed turning it off can slightly increase the
+           overall speed..
+    :type skip_save_log: Boolean
     :param skip_save_processed_input: If a CSV dataset is provided it is
            preprocessed and then saved as an hdf5 and json to avoid running
            the preprocessing again. If this parameter is False,
@@ -147,78 +159,24 @@ def experiment(
     :param gpu_fraction: Fraction of the memory of each GPU to use at
            the beginning of the training. The memory may grow elastically.
     :type gpu_fraction: Integer
+    :param use_horovod: Flag for using horovod
+    :type use_horovod: Boolean
     :param random_seed: Random seed used for weights initialization,
            splits and any other random function.
     :type random_seed: Integer
     :param debug: If true turns on tfdbg with inf_or_nan checks.
     :type debug: Boolean
     """
-    # set input features defaults
-    if model_definition_file is not None:
-        with open(model_definition_file, 'r') as def_file:
-            model_definition = merge_with_defaults(yaml.load(def_file))
-    else:
-        model_definition = merge_with_defaults(model_definition)
 
-    # setup directories and file names
-    experiment_dir_name = None
-    if model_resume_path is not None:
-        if os.path.exists(model_resume_path):
-            experiment_dir_name = model_resume_path
-        else:
-            if is_on_master():
-                logging.info(
-                    'Model resume path does not exists, '
-                    'starting training from scratch'
-                )
-            model_resume_path = None
-
-    if model_resume_path is None:
-        if is_on_master():
-            experiment_dir_name = get_experiment_dir_name(
-                output_directory,
-                experiment_name,
-                model_name
-            )
-        else:
-            experiment_dir_name = '/'
-    description_fn, training_stats_fn, model_dir = get_file_names(
-        experiment_dir_name
-    )
-
-    # save description
-    description = get_experiment_description(
-        model_definition,
-        data_csv,
-        data_train_csv,
-        data_validation_csv,
-        data_test_csv,
-        data_hdf5,
-        data_train_hdf5,
-        data_validation_hdf5,
-        data_test_hdf5,
-        train_set_metadata_json,
-        random_seed
-    )
-    if is_on_master():
-        save_json(description_fn, description)
-        # print description
-        logging.info('Experiment name: {}'.format(experiment_name))
-        logging.info('Model name: {}'.format(model_name))
-        logging.info('Output path: {}'.format(experiment_dir_name))
-        logging.info('')
-        for key, value in description.items():
-            logging.info('{}: {}'.format(key, pformat(value, indent=4)))
-        logging.info('')
-
-    # preprocess
     (
-        training_set,
-        validation_set,
-        test_set,
-        train_set_metadata
-    ) = preprocess_for_training(
+        model,
+        preprocessed_data,
+        experiment_dir_name,
+        _,
+        model_definition
+    ) = full_train(
         model_definition,
+        model_definition_file=model_definition_file,
         data_csv=data_csv,
         data_train_csv=data_train_csv,
         data_validation_csv=data_validation_csv,
@@ -228,127 +186,69 @@ def experiment(
         data_validation_hdf5=data_validation_hdf5,
         data_test_hdf5=data_test_hdf5,
         train_set_metadata_json=train_set_metadata_json,
-        skip_save_processed_input=skip_save_processed_input,
-        preprocessing_params=model_definition[
-            'preprocessing'],
-        random_seed=random_seed
-    )
-    if is_on_master():
-        logging.info('Training set: {0}'.format(training_set.size))
-        logging.info('Validation set: {0}'.format(validation_set.size))
-        logging.info('Test set: {0}'.format(test_set.size))
-
-    # update model definition with metadata properties
-    update_model_definition_with_metadata(model_definition, train_set_metadata)
-
-    # run the experiment
-    model, training_results = train(
-        training_set=training_set,
-        validation_set=validation_set,
-        test_set=test_set,
-        model_definition=model_definition,
-        save_path=model_dir,
+        experiment_name=experiment_name,
+        model_name=model_name,
         model_load_path=model_load_path,
-        resume=model_resume_path is not None,
-        skip_save_progress_weights=skip_save_progress_weights,
+        model_resume_path=model_resume_path,
+        skip_save_model=skip_save_model,
+        skip_save_progress=skip_save_progress,
+        skip_save_log=skip_save_log,
+        skip_save_processed_input=skip_save_processed_input,
+        output_directory=output_directory,
+        should_close_session=False,
         gpus=gpus,
         gpu_fraction=gpu_fraction,
         use_horovod=use_horovod,
         random_seed=random_seed,
-        debug=debug
-    )
-    (
-        train_trainset_stats,
-        train_valisest_stats,
-        train_testset_stats
-    ) = training_results
-
-    if is_on_master():
-        # save train set metadata
-        save_json(
-            os.path.join(
-                model_dir,
-                TRAIN_SET_METADATA_FILE_NAME
-            ),
-            train_set_metadata
-        )
-
-    # grab the results of the model with highest validation test performance
-    validation_field = model_definition['training']['validation_field']
-    validation_measure = model_definition['training']['validation_measure']
-    validation_field_result = train_valisest_stats[validation_field]
-
-    # max or min depending on the measure
-    best_function = get_best_function(validation_measure)
-    epoch_best_vali_measure, best_vali_measure = best_function(
-        enumerate(validation_field_result[validation_measure]),
-        key=lambda pair: pair[1]
+        debug=debug,
+        **kwargs
     )
 
-    best_vali_measure_epoch_test_measure = train_testset_stats[
-        validation_field
-    ][validation_measure][epoch_best_vali_measure]
+    (training_set,
+     validation_set,
+     test_set,
+     train_set_metadata) = preprocessed_data
 
-    # print the results of the model with highest validation test performance
-    if is_on_master():
-        logging.info('Best validation model epoch: {0}'.format(
-            epoch_best_vali_measure + 1)
+    if test_set is not None:
+        if model_definition['training']['eval_batch_size'] > 0:
+            batch_size = model_definition['training']['eval_batch_size']
+        else:
+            batch_size = model_definition['training']['batch_size']
+
+        # predict
+        test_results = predict(
+            test_set,
+            train_set_metadata,
+            model,
+            model_definition,
+            batch_size,
+            evaluate_performance=True,
+            gpus=gpus,
+            gpu_fraction=gpu_fraction,
+            debug=debug
         )
-        logging.info(
-            'Best validation model {0} on validation set {1}: {2}'.format(
-                validation_measure,
-                validation_field,
-                best_vali_measure)
-        )
-        logging.info('Best validation model {0} on test set {1}: {2}'.format(
-            validation_measure,
-            validation_field,
-            best_vali_measure_epoch_test_measure)
+        # postprocess
+        postprocessed_output = postprocess(
+            test_results,
+            model_definition['output_features'],
+            train_set_metadata,
+            experiment_dir_name,
+            skip_save_unprocessed_output or not is_on_master()
         )
 
-    # save training statistics
-    if is_on_master():
-        save_json(
-            training_stats_fn,
-            {
-                'train': train_trainset_stats,
-                'validation': train_valisest_stats,
-                'test': train_testset_stats
-            }
-        )
-
-    # predict
-    test_results = predict(
-        test_set,
-        train_set_metadata,
-        model,
-        model_definition,
-        model_definition['training']['batch_size'],
-        only_predictions=False,
-        gpus=gpus,
-        gpu_fraction=gpu_fraction,
-        debug=debug
-    )
+        if is_on_master():
+            print_test_results(test_results)
+            save_prediction_outputs(postprocessed_output, experiment_dir_name)
+            save_test_statistics(test_results, experiment_dir_name)
+    
     model.close_session()
 
-    # postprocess
-    postprocessed_output = postprocess(
-        test_results,
-        model_definition['output_features'],
-        train_set_metadata,
-        experiment_dir_name,
-        skip_save_unprocessed_output or not is_on_master()
-    )
-
     if is_on_master():
-        print_prediction_results(test_results)
+        logger.info('\nFinished: {0}_{1}'.format(
+            experiment_name, model_name))
+        logger.info('Saved to: {}'.format(experiment_dir_name))
 
-        save_prediction_outputs(postprocessed_output, experiment_dir_name)
-        save_prediction_statistics(test_results, experiment_dir_name)
-
-        logging.info('\nFinished: {0}_{1}'.format(experiment_name, model_name))
-        logging.info('Saved to: {}'.format(experiment_dir_name))
-
+    contrib_command("experiment_save", experiment_dir_name)
     return experiment_dir_name
 
 
@@ -455,7 +355,7 @@ def cli(sys_argv):
     model_definition.add_argument(
         '-md',
         '--model_definition',
-        type=yaml.load,
+        type=yaml.safe_load,
         help='model definition'
     )
     model_definition.add_argument(
@@ -475,12 +375,39 @@ def cli(sys_argv):
         help='path of a the model directory to resume training of'
     )
     parser.add_argument(
-        '-sspw',
-        '--skip_save_progress_weights',
-        help='does not save weights after each epoch. By default Ludwig saves '
-             'weights after each epoch for enabling resuming of training, but '
-             'if the model is really big that can be time consuming and will '
-             'use twice as much storage space, use this parameter to skip it.'
+        '-ssm',
+        '--skip_save_model',
+        action='store_true',
+        default=False,
+        help='disables saving model weights and hyperparameters each time '
+             'the model imrpoves. '
+             'By default Ludwig saves model weights after each epoch '
+             'the validation measure imrpvoes, but if the model is really big '
+             'that can be time consuming if you do not want to keep '
+             'the weights and just find out what performance can a model get '
+             'with a set of hyperparameters, use this parameter to skip it,'
+             'but the model will not be loadable later on.'
+    )
+    parser.add_argument(
+        '-ssp',
+        '--skip_save_progress',
+        action='store_true',
+        default=False,
+        help='disables saving progress each epoch. By default Ludwig saves '
+             'weights and stats  after each epoch for enabling resuming '
+             'of training, but if the model is really big that can be '
+             'time consuming and will uses twice as much space, use '
+             'this parameter to skip it, but training cannot be resumed '
+             'later on. '
+    )
+    parser.add_argument(
+        '-ssl',
+        '--skip_save_log',
+        action='store_true',
+        default=False,
+        help='disables saving TensorBoard logs. By default Ludwig saves '
+             'logs for the TensorBoard, but if it is not needed turning it off '
+             'can slightly increase the overall speed.'
     )
 
     # ------------------
@@ -534,11 +461,7 @@ def cli(sys_argv):
 
     args = parser.parse_args(sys_argv)
 
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=logging_level_registry[args.logging_level],
-        format='%(message)s'
-    )
+    logger.setLevel(logging_level_registry[args.logging_level])
 
     set_on_master(args.use_horovod)
 
@@ -549,4 +472,5 @@ def cli(sys_argv):
 
 
 if __name__ == '__main__':
+    contrib_command("experiment", *sys.argv)
     cli(sys.argv[1:])

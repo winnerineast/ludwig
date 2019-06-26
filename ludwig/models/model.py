@@ -22,12 +22,12 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
-import json
 import logging
 import os
 import re
 import signal
 import sys
+import threading
 import time
 from collections import OrderedDict
 
@@ -40,32 +40,33 @@ from tqdm import tqdm
 from ludwig.constants import *
 from ludwig.features.feature_registries import output_type_registry
 from ludwig.features.feature_utils import SEQUENCE_TYPES
-from ludwig.globals import MODEL_WEIGHTS_FILE_NAME
 from ludwig.globals import MODEL_HYPERPARAMETERS_FILE_NAME
-from ludwig.globals import TRAINING_PROGRESS_FILE_NAME
+from ludwig.globals import MODEL_WEIGHTS_FILE_NAME
 from ludwig.globals import MODEL_WEIGHTS_PROGRESS_FILE_NAME
-from ludwig.globals import is_progressbar_disabled
+from ludwig.globals import TRAINING_PROGRESS_FILE_NAME
 from ludwig.globals import is_on_master
+from ludwig.globals import is_progressbar_disabled
 from ludwig.models.combiners import get_build_combiner
 from ludwig.models.inputs import build_inputs, dynamic_length_encoders
 from ludwig.models.modules.loss_modules import regularizer_registry
-from ludwig.models.modules.measure_modules import get_initial_validation_value
 from ludwig.models.modules.measure_modules import get_improved_fun
+from ludwig.models.modules.measure_modules import get_initial_validation_value
 from ludwig.models.modules.optimization_modules import optimize
 from ludwig.models.outputs import build_outputs
 from ludwig.utils import time_utils
 from ludwig.utils.batcher import Batcher
 from ludwig.utils.batcher import BucketedBatcher
 from ludwig.utils.batcher import DistributedBatcher
-from ludwig.utils.data_utils import load_json
-from ludwig.utils.data_utils import load_object
-from ludwig.utils.data_utils import save_object
+from ludwig.utils.data_utils import load_json, save_json
 from ludwig.utils.defaults import default_random_seed
 from ludwig.utils.defaults import default_training_params
 from ludwig.utils.math_utils import learning_rate_warmup
 from ludwig.utils.misc import set_random_seed
 from ludwig.utils.misc import sum_dicts
 from ludwig.utils.tf_utils import get_tf_config
+
+
+logger = logging.getLogger(__name__)
 
 
 class Model:
@@ -164,7 +165,7 @@ class Model:
                 setattr(self, fe_name, fe_properties['placeholder'])
 
             # ================ Model ================
-            logging.debug('- Combiner {}'.format(combiner['type']))
+            logger.debug('- Combiner {}'.format(combiner['type']))
             build_combiner = get_build_combiner(combiner['type'])(**combiner)
             hidden, hidden_size = build_combiner(
                 feature_encodings,
@@ -205,7 +206,7 @@ class Model:
 
             tf.summary.scalar('train_reg_mean_loss', self.train_reg_mean_loss)
 
-            self.merged = tf.summary.merge_all()
+            self.merged_summary = tf.summary.merge_all()
             self.graph = graph
             self.graph_initialize = tf.global_variables_initializer()
             if self.horovod:
@@ -238,7 +239,8 @@ class Model:
     def feed_dict(
             self,
             batch,
-            regularization_lambda=default_training_params['regularization_lambda'],
+            regularization_lambda=default_training_params[
+                'regularization_lambda'],
             learning_rate=default_training_params['learning_rate'],
             dropout_rate=default_training_params['dropout_rate'],
             is_training=True
@@ -272,6 +274,7 @@ class Model:
             epochs=100,
             learning_rate=0.001,
             batch_size=128,
+            eval_batch_size=0,
             bucketing_field=None,
             dropout_rate=0.0,
             early_stop=20,
@@ -284,7 +287,9 @@ class Model:
             increase_batch_size_on_plateau_max=512,
             learning_rate_warmup_epochs=5,  # used when training with Horovod
             resume=False,
-            skip_save_progress_weights=False,
+            skip_save_model=False,
+            skip_save_progress=False,
+            skip_save_log=False,
             gpus=None,
             gpu_fraction=1,
             random_seed=default_random_seed,
@@ -308,9 +313,11 @@ class Model:
         :param learning_rate: Learning rate for the algorithm, represents how
                much to scale the gradients by
         :type learning_rate: Integer
-        :param batch_size: Size of batch to pass to the machine learning model.
+        :param batch_size: Size of batch to pass to the model for training.
         :type batch_size: Integer
-        :param bucketing_field:when batching, buckets datapoints based the
+        :param batch_size: Size of batch to pass to the model for evaluation.
+        :type batch_size: Integer
+        :param bucketing_field: when batching, buckets datapoints based the
                length of a field together. Bucketing on text length speeds up
                training of RNNs consistently, 30% in some cases
         :type bucketing_field:
@@ -322,7 +329,7 @@ class Model:
         :type early_stop: Integer
         :param reduce_learning_rate_on_plateau: Reduces the learning rate when
                the algorithm hits a plateau (i.e. the performance on the
-               validation doesn't improve)
+               validation does not improve)
         :type reduce_learning_rate_on_plateau: Float
         :param reduce_learning_rate_on_plateau_patience: How many epochs have
                to pass before the learning rate reduces
@@ -346,8 +353,27 @@ class Model:
         :type learning_rate_warmup_epochs: Integer
         :param resume: Resume training a model that was being trained.
         :type resume: Boolean
-        :param skip_save_progress_weights:
-        :type skip_save_progress_weights:
+        :param skip_save_model: disables
+               saving model weights and hyperparameters each time the model
+               improves. By default Ludwig saves model weights after each epoch
+               the validation measure imrpvoes, but if the model is really big
+               that can be time consuming if you do not want to keep
+               the weights and just find out what performance can a model get
+               with a set of hyperparameters, use this parameter to skip it,
+               but the model will not be loadable later on.
+        :type skip_save_model: Boolean
+        :param skip_save_progress: disables saving progress each epoch.
+               By default Ludwig saves weights and stats  after each epoch
+               for enabling resuming of training, but if the model is
+               really big that can be time consuming and will uses twice
+               as much space, use this parameter to skip it, but training
+               cannot be resumed later on
+        :type skip_save_progress: Boolean
+        :param skip_save_log: Disables saving TensorBoard
+               logs. By default Ludwig saves logs for the TensorBoard, but if it
+               is not needed turning it off can slightly increase the
+               overall speed..
+        :type skip_save_log: Boolean
         :param gpus: List of gpus to use
         :type gpus: List
         :param gpu_fraction: Percentage of the GPU that is intended to be used
@@ -360,13 +386,18 @@ class Model:
         self.epochs = epochs
         digits_per_epochs = len(str(self.epochs))
         self.received_sigint = False
-        signal.signal(signal.SIGINT, self.set_epochs_to_1_or_quit)
+        # Only use signals when on the main thread to avoid issues with CherryPy: https://github.com/uber/ludwig/issues/286
+        if threading.current_thread() == threading.main_thread():
+            signal.signal(signal.SIGINT, self.set_epochs_to_1_or_quit)
         should_validate = validation_set is not None and validation_set.size > 0
+        if eval_batch_size < 1:
+            eval_batch_size = batch_size
         stat_names = self.get_stat_names(output_features)
         if self.horovod:
             learning_rate *= self.horovod.size()
 
         # ====== Setup file names =======
+        os.makedirs(save_path, exist_ok=True)
         model_weights_path = os.path.join(save_path, MODEL_WEIGHTS_FILE_NAME)
         model_weights_progress_path = os.path.join(
             save_path,
@@ -380,11 +411,13 @@ class Model:
         # ====== Setup session =======
         session = self.initialize_session(gpus, gpu_fraction)
 
+        train_writer = None
         if is_on_master():
-            train_writer = tf.summary.FileWriter(
-                os.path.join(save_path, 'log', 'train'),
-                session.graph
-            )
+            if not skip_save_log:
+                train_writer = tf.summary.FileWriter(
+                    os.path.join(save_path, 'log', 'train'),
+                    session.graph
+                )
 
         if self.debug:
             session = tf_debug.LocalCLIDebugWrapperSession(session)
@@ -445,7 +478,7 @@ class Model:
             # epoch init
             start_time = time.time()
             if is_on_master():
-                logging.info(
+                logger.info(
                     '\nEpoch {epoch:{digits}d}'.format(
                         epoch=progress_tracker.epoch + 1,
                         digits=digits_per_epochs
@@ -456,7 +489,7 @@ class Model:
 
             # ================ Train ================
             if is_on_master():
-                bar = tqdm(
+                progress_bar = tqdm(
                     desc='Training',
                     total=batcher.steps_per_epoch,
                     file=sys.stdout,
@@ -473,13 +506,18 @@ class Model:
                         progress_tracker.epoch,
                         learning_rate_warmup_epochs,
                         self.horovod.size(),
+                        batcher.step,
                         batcher.steps_per_epoch
-                    )
+                    ) * self.horovod.size()
                 else:
                     current_learning_rate = progress_tracker.learning_rate
 
-                summary, _ = session.run(
-                    [self.merged, self.optimize],
+                readout_nodes = {'optimize': self.optimize}
+                if not skip_save_log:
+                    readout_nodes['summary'] = self.merged_summary
+
+                output_values = session.run(
+                    readout_nodes,
                     feed_dict=self.feed_dict(
                         batch,
                         regularization_lambda=regularization_lambda,
@@ -488,17 +526,20 @@ class Model:
                         is_training=True
                     )
                 )
+
                 if is_on_master():
-                    # it is initialized only on master
-                    train_writer.add_summary(summary, progress_tracker.steps)
+                    if not skip_save_log:
+                        # it is initialized only on master
+                        train_writer.add_summary(output_values['summary'],
+                                                 progress_tracker.steps)
 
                 progress_tracker.steps += 1
                 if is_on_master():
-                    bar.update(1)
+                    progress_bar.update(1)
 
             # post training
             if is_on_master():
-                bar.close()
+                progress_bar.close()
 
             progress_tracker.epoch += 1
             batcher.reset()  # todo this may be useless, doublecheck
@@ -520,39 +561,41 @@ class Model:
                 regularization_lambda,
                 progress_tracker.train_stats,
                 tables,
-                progress_tracker.batch_size,
+                eval_batch_size,
                 bucketing_field
             )
 
-            # eval measures on validation set
-            self.evaluation(
-                session,
-                validation_set,
-                'vali',
-                regularization_lambda,
-                progress_tracker.vali_stats,
-                tables,
-                progress_tracker.batch_size,
-                bucketing_field
-            )
+            if validation_set is not None and validation_set.size > 0:
+                # eval measures on validation set
+                self.evaluation(
+                    session,
+                    validation_set,
+                    'vali',
+                    regularization_lambda,
+                    progress_tracker.vali_stats,
+                    tables,
+                    eval_batch_size,
+                    bucketing_field
+                )
 
-            # eval measures on test set
-            self.evaluation(
-                session,
-                test_set,
-                'test',
-                regularization_lambda,
-                progress_tracker.test_stats,
-                tables,
-                progress_tracker.batch_size,
-                bucketing_field
-            )
+            if test_set is not None and test_set.size > 0:
+                # eval measures on test set
+                self.evaluation(
+                    session,
+                    test_set,
+                    'test',
+                    regularization_lambda,
+                    progress_tracker.test_stats,
+                    tables,
+                    eval_batch_size,
+                    bucketing_field
+                )
 
             # mbiu and end of epoch prints
             elapsed_time = (time.time() - start_time) * 1000.0
 
             if is_on_master():
-                logging.info('Took {time}'.format(
+                logger.info('Took {time}'.format(
                     time=time_utils.strdelta(elapsed_time)))
 
             # stat prints
@@ -563,7 +606,7 @@ class Model:
                          len(output_features) > 1)
                 ):
                     if is_on_master():
-                        logging.info(
+                        logger.info(
                             tabulate(
                                 table,
                                 headers='firstrow',
@@ -587,33 +630,42 @@ class Model:
                     increase_batch_size_on_plateau,
                     increase_batch_size_on_plateau_max,
                     increase_batch_size_on_plateau_rate,
-                    early_stop
+                    early_stop,
+                    skip_save_model
                 )
                 if should_break:
                     break
             else:
                 # there's no validation, so we save the model at each iteration
                 if is_on_master():
-                    self.save_weights(session, model_weights_path)
-                    self.save_hyperparameters(
-                        self.hyperparameters,
-                        model_hyperparameters_path
-                    )
+                    if not skip_save_model:
+                        self.save_weights(session, model_weights_path)
+                        self.save_hyperparameters(
+                            self.hyperparameters,
+                            model_hyperparameters_path
+                        )
 
             # ========== Save training progress ==========
             if is_on_master():
-                save_object(
-                    os.path.join(
-                        save_path,
-                        TRAINING_PROGRESS_FILE_NAME
-                    ),
-                    progress_tracker
-                )
-                if not skip_save_progress_weights:
+                if not skip_save_progress:
                     self.save_weights(session, model_weights_progress_path)
+                    progress_tracker.save(
+                        os.path.join(
+                            save_path,
+                            TRAINING_PROGRESS_FILE_NAME
+                        )
+                    )
+                    if skip_save_model:
+                        self.save_hyperparameters(
+                            self.hyperparameters,
+                            model_hyperparameters_path
+                        )
 
             if is_on_master():
-                logging.info('')
+                logger.info('')
+
+        if train_writer is not None:
+            train_writer.close()
 
         return (
             progress_tracker.train_stats,
@@ -636,7 +688,7 @@ class Model:
         batcher = self.initialize_batcher(dataset, batch_size, bucketing_field)
 
         # training step loop
-        bar = tqdm(
+        progress_bar = tqdm(
             desc='Trainining online',
             total=batcher.steps_per_epoch,
             file=sys.stdout,
@@ -656,9 +708,9 @@ class Model:
                     is_training=True
                 )
             )
-            bar.update(1)
+            progress_bar.update(1)
 
-        bar.close()
+        progress_bar.close()
 
     def evaluation(
             self,
@@ -723,7 +775,7 @@ class Model:
         set_size = dataset.size
         if set_size == 0:
             if is_on_master():
-                logging.warning('No datapoints to evaluate on.')
+                logger.warning('No datapoints to evaluate on.')
             return output_stats
         seq_set_size = {output_feature['name']: {} for output_feature in
                         self.hyperparameters['output_features'] if
@@ -737,7 +789,7 @@ class Model:
         )
 
         if is_on_master():
-            bar = tqdm(
+            progress_bar = tqdm(
                 desc='Evaluation' if name is None
                 else 'Evaluation {0: <5.5}'.format(name),
                 total=batcher.steps_per_epoch,
@@ -765,10 +817,10 @@ class Model:
                 result
             )
             if is_on_master():
-                bar.update(1)
+                progress_bar.update(1)
 
         if is_on_master():
-            bar.close()
+            progress_bar.close()
 
         if self.horovod:
             output_stats, seq_set_size = self.merge_workers_outputs(
@@ -826,7 +878,7 @@ class Model:
             should_shuffle=False
         )
 
-        bar = tqdm(
+        progress_bar = tqdm(
             desc='Collecting Tensors',
             total=batcher.steps_per_epoch,
             file=sys.stdout,
@@ -847,9 +899,9 @@ class Model:
                 for row in result[tensor_name]:
                     collected_tensors[tensor_name].append(row)
 
-            bar.update(1)
+            progress_bar.update(1)
 
-        bar.close()
+        progress_bar.close()
 
         return collected_tensors
 
@@ -934,8 +986,8 @@ class Model:
                             result[field_name][stat_config['output']].sum()
                         )
                         seq_set_size[field_name][stat] = (
-                            seq_set_size[field_name].get(stat, 0) +
-                            len(result[field_name][stat_config['output']])
+                                seq_set_size[field_name].get(stat, 0) +
+                                len(result[field_name][stat_config['output']])
                         )
                     elif aggregation_method == AVG_EXP:
                         output_stats[field_name][stat] += (
@@ -1077,7 +1129,8 @@ class Model:
             increase_batch_size_on_plateau,
             increase_batch_size_on_plateau_max,
             increase_batch_size_on_plateau_rate,
-            early_stop
+            early_stop,
+            skip_save_model
     ):
         should_break = False
         # record how long its been since an improvement
@@ -1091,26 +1144,25 @@ class Model:
             progress_tracker.best_valid_measure = progress_tracker.vali_stats[
                 validation_field][validation_measure][-1]
             if is_on_master():
-                self.save_weights(session, model_weights_path)
-                self.save_hyperparameters(
-                    self.hyperparameters,
-                    model_hyperparameters_path
-                )
+                if not skip_save_model:
+                    self.save_weights(session, model_weights_path)
+                    self.save_hyperparameters(
+                        self.hyperparameters,
+                        model_hyperparameters_path
+                    )
+                    logger.info(
+                        'Validation {} on {} improved, model saved'.format(
+                            validation_measure,
+                            validation_field
+                        )
+                    )
 
         progress_tracker.last_improvement = (
                 progress_tracker.epoch - progress_tracker.last_improvement_epoch
         )
-        if progress_tracker.last_improvement == 0:
+        if progress_tracker.last_improvement != 0:
             if is_on_master():
-                logging.info(
-                    'Validation {} on {} improved, model saved'.format(
-                        validation_measure,
-                        validation_field
-                    )
-                )
-        else:
-            if is_on_master():
-                logging.info(
+                logger.info(
                     'Last improvement of {} on {} happened '
                     '{} epoch{} ago'.format(
                         validation_measure,
@@ -1143,7 +1195,7 @@ class Model:
         if early_stop > 0:
             if progress_tracker.last_improvement >= early_stop:
                 if is_on_master():
-                    logging.info(
+                    logger.info(
                         "\nEARLY STOPPING due to lack of validation improvement"
                         ", it has been {0} epochs since last validation "
                         "accuracy improvement\n".format(
@@ -1158,7 +1210,7 @@ class Model:
             self,
             dataset,
             batch_size,
-            only_predictions=False,
+            evaluate_performance=True,
             gpus=None,
             gpu_fraction=1,
             **kwargs
@@ -1179,7 +1231,7 @@ class Model:
             batch_size,
             is_training=False,
             collect_predictions=True,
-            only_predictions=only_predictions
+            only_predictions=not evaluate_performance
         )
 
         return predict_stats
@@ -1258,8 +1310,6 @@ class Model:
         return collected_tensors
 
     def save_weights(self, session, save_path):
-        if is_on_master():
-            self.weights_save_path = self.saver.save(session, save_path)
         self.weights_save_path = self.saver.save(session, save_path)
 
     def save_hyperparameters(self, hyperparameters, save_path):
@@ -1272,8 +1322,7 @@ class Model:
                         local_hyperparamters['output_features']):
             if 'pretrained_embeddings' in feature:
                 feature['pretrained_embeddings'] = None
-        with open(save_path, 'w') as fp:
-            json.dump(hyperparameters, fp, sort_keys=True, indent=4)
+        save_json(save_path, hyperparameters, sort_keys=True, indent=4)
 
     def restore(self, session, weights_path):
         self.saver.restore(session, weights_path)
@@ -1296,26 +1345,26 @@ class Model:
         if not self.received_sigint:
             self.epochs = 1
             self.received_sigint = True
-            logging.critical(
+            logger.critical(
                 '\nReceived SIGINT, will finish this epoch and then conclude '
                 'the training'
             )
-            logging.critical(
+            logger.critical(
                 'Send another SIGINT to immediately interrupt the process'
             )
         else:
-            logging.critical('\nReceived a second SIGINT, will now quit')
+            logger.critical('\nReceived a second SIGINT, will now quit')
             sys.exit(1)
 
     def quit_training(self, signum, frame):
-        logging.critical('Received SIGQUIT, will kill training')
+        logger.critical('Received SIGQUIT, will kill training')
         sys.exit(1)
 
     def resume_training(self, save_path, model_weights_path):
         if is_on_master():
-            logging.info('Resuming training of model: {0}'.format(save_path))
+            logger.info('Resuming training of model: {0}'.format(save_path))
         self.weights_save_path = model_weights_path
-        progress_tracker = load_object(
+        progress_tracker = ProgressTracker.load(
             os.path.join(
                 save_path,
                 TRAINING_PROGRESS_FILE_NAME
@@ -1453,24 +1502,21 @@ class Model:
             if (progress_tracker.num_reductions_lr >=
                     reduce_learning_rate_on_plateau):
                 if is_on_master():
-                    logging.info('\n')
-                    logging.info(
-                        "It has been " +
+                    logger.info(
+                        'It has been ' +
                         str(progress_tracker.last_improvement) +
-                        'epochs since last validation accuracy improvement '
+                        ' epochs since last validation accuracy improvement '
                         'and the learning rate was already reduced ' +
                         str(progress_tracker.num_reductions_lr) +
-                        'times, not reducing it anymore'
+                        ' times, not reducing it anymore'
                     )
-                    logging.info('\n')
             else:
                 if is_on_master():
-                    logging.info('\n')
-                    logging.info(
-                        'PLATEAU REACHED, reducing learning rate'
-                        ' due to lack of validation improvement, it has been' +
+                    logger.info(
+                        'PLATEAU REACHED, reducing learning rate '
+                        'due to lack of validation improvement, it has been ' +
                         str(progress_tracker.last_improvement) +
-                        'epochs since last validation accuracy improvement'
+                        ' epochs since last validation accuracy improvement '
                         'or since the learning rate was reduced'
                     )
 
@@ -1496,41 +1542,36 @@ class Model:
             if (progress_tracker.num_increases_bs >=
                     increase_batch_size_on_plateau):
                 if is_on_master():
-                    logging.info('\n')
-                    logging.info(
-                        "It has been " +
+                    logger.info(
+                        'It has been ' +
                         str(progress_tracker.last_improvement) +
-                        'epochs since last validation accuracy improvement '
+                        ' epochs since last validation accuracy improvement '
                         'and the learning rate was already reduced ' +
                         str(progress_tracker.num_increases_bs) +
-                        'times, not reducing it anymore'
+                        ' times, not reducing it anymore'
                     )
-                    logging.info('\n')
 
             elif (progress_tracker.batch_size ==
                   increase_batch_size_on_plateau_max):
                 if is_on_master():
-                    logging.info('\n')
-                    logging.info(
-                        "It has been" +
+                    logger.info(
+                        'It has been' +
                         str(progress_tracker.last_improvement) +
-                        'epochs since last validation accuracy improvement'
-                        'and the batch size was already increased' +
+                        ' epochs since last validation accuracy improvement '
+                        'and the batch size was already increased ' +
                         str(progress_tracker.num_increases_bs) +
-                        'times and currently is' +
+                        ' times and currently is ' +
                         str(progress_tracker.batch_size) +
                         ', the maximum allowed'
                     )
-                    logging.info('\n')
             else:
                 if is_on_master():
-                    logging.info('\n')
-                    logging.info(
-                        'PLATEAU REACHED'
-                        'increasing batch size due to lack of'
-                        'validation improvement, it has been' +
+                    logger.info(
+                        'PLATEAU REACHED '
+                        'increasing batch size due to lack of '
+                        'validation improvement, it has been ' +
                         str(progress_tracker.last_improvement) +
-                        'epochs since last validation accuracy improvement'
+                        ' epochs since last validation accuracy improvement '
                         'or since the batch size was increased'
                     )
 
@@ -1557,13 +1598,14 @@ class ProgressTracker:
             num_increases_bs,
             train_stats,
             vali_stats,
-            test_stats
+            test_stats,
+            last_improvement=0
     ):
         self.batch_size = batch_size
         self.epoch = epoch
         self.steps = steps
         self.last_improvement_epoch = last_improvement_epoch
-        self.last_improvement = 0
+        self.last_improvement = last_improvement
         self.learning_rate = learning_rate
         self.best_valid_measure = best_valid_measure
         self.num_reductions_lr = num_reductions_lr
@@ -1571,6 +1613,14 @@ class ProgressTracker:
         self.train_stats = train_stats
         self.vali_stats = vali_stats
         self.test_stats = test_stats
+
+    def save(self, filepath):
+        save_json(filepath, self.__dict__)
+
+    @staticmethod
+    def load(filepath):
+        loaded = load_json(filepath)
+        return ProgressTracker(**loaded)
 
 
 def load_model_and_definition(model_dir, use_horovod=False):

@@ -25,16 +25,16 @@ class Stacked2DCNN:
             conv_layers=None,
             num_conv_layers=None,
             filter_size=3,
-            num_filters=256,
+            num_filters=32,
             pool_size=2,
             stride=1,
-            pool_stride=1,
+            pool_stride=2,
             fc_layers=None,
             num_fc_layers=1,
-            fc_size=256,
+            fc_size=128,
             norm=None,
             activation='relu',
-            dropout=False,
+            dropout=True,
             regularize=True,
             initializer=None,
             **kwargs
@@ -102,6 +102,8 @@ class ResNetEncoder:
             conv_stride=1,
             first_pool_size=None,
             first_pool_stride=None,
+            batch_norm_momentum=0.9,
+            batch_norm_epsilon=0.001,
             fc_layers=None,
             num_fc_layers=1,
             fc_size=256,
@@ -112,9 +114,6 @@ class ResNetEncoder:
             initializer=None,
             **kwargs
     ):
-        if resnet_size % 6 != 2:
-            raise ValueError('resnet_size must be 6n + 2:', resnet_size)
-
         if resnet_size < 50:
             bottleneck = False
         else:
@@ -132,7 +131,9 @@ class ResNetEncoder:
             first_pool_size,
             first_pool_stride,
             block_sizes,
-            block_strides
+            block_strides,
+            batch_norm_momentum,
+            batch_norm_epsilon
         )
         self.fc_stack = FCStack(
             layers=fc_layers,
