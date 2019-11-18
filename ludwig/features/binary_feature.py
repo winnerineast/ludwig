@@ -34,7 +34,7 @@ from ludwig.utils.metrics_utils import precision_recall_curve
 from ludwig.utils.metrics_utils import roc_auc_score
 from ludwig.utils.metrics_utils import roc_curve
 from ludwig.utils.misc import set_default_value
-
+from ludwig.utils.misc import set_default_values
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class BinaryInputFeature(BinaryBaseFeature, InputFeature):
         _ = self.overwrite_defaults(feature)
 
     def _get_input_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.bool,
             shape=[None],  # None is for dealing with variable batch size
             name='{}_placeholder'.format(self.name)
@@ -128,13 +128,14 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
 
         self.loss = {
             'robust_lambda': 0,
-            'confidence_penalty': 0
+            'confidence_penalty': 0,
+            'positive_class_weight': 1
         }
 
         _ = self.overwrite_defaults(feature)
 
     def _get_output_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.bool,
             [None],  # None is for dealing with variable batch size
             name='{}_placeholder'.format(self.name)
@@ -149,16 +150,16 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
         if not self.regularize:
             regularizer = None
 
-        with tf.variable_scope('predictions_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('predictions_{}'.format(self.name)):
             initializer_obj = get_initializer(self.initializer)
-            weights = tf.get_variable(
+            weights = tf.compat.v1.get_variable(
                 'weights',
                 initializer=initializer_obj([hidden_size, 1]),
                 regularizer=regularizer
             )
             logger.debug('  regression_weights: {0}'.format(weights))
 
-            biases = tf.get_variable('biases', [1])
+            biases = tf.compat.v1.get_variable('biases', [1])
             logger.debug('  regression_biases: {0}'.format(biases))
 
             logits = tf.reshape(tf.matmul(hidden, weights) + biases, [-1])
@@ -178,9 +179,20 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
         return predictions, probabilities, logits
 
     def _get_loss(self, targets, logits, probabilities):
-        with tf.variable_scope('loss_{}'.format(self.name)):
-            train_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.cast(targets, tf.float32), logits=logits)
+        with tf.compat.v1.variable_scope('loss_{}'.format(self.name)):
+            positive_class_weight = self.loss['positive_class_weight']
+            if not positive_class_weight > 0:
+                raise ValueError(
+                    'positive_class_weight is {}, but has to be > 0 to ensure '
+                    'that loss for positive labels '
+                    'p_label=1 * log(sigmoid(p_predict)) is > 0'.format(
+                        positive_class_weight))
+
+            train_loss = tf.nn.weighted_cross_entropy_with_logits(
+                targets=tf.cast(targets, tf.float32),
+                logits=logits,
+                pos_weight=positive_class_weight
+            )
 
             if self.loss['robust_lambda'] > 0:
                 train_loss = ((1 - self.loss['robust_lambda']) * train_loss +
@@ -201,7 +213,7 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
         return train_mean_loss, train_loss
 
     def _get_measures(self, targets, predictions):
-        with tf.variable_scope('measures_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('measures_{}'.format(self.name)):
             accuracy, correct_predictions = get_accuracy(
                 targets,
                 predictions,
@@ -214,6 +226,8 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
             hidden,
             hidden_size,
             regularizer=None,
+            dropout_rate=None,
+            is_training=None,
             **kwargs
     ):
         output_tensors = {}
@@ -254,7 +268,7 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
         output_tensors[EVAL_LOSS + '_' + self.name] = eval_loss
         output_tensors[TRAIN_MEAN_LOSS + '_' + self.name] = train_mean_loss
 
-        tf.summary.scalar(
+        tf.compat.v1.summary.scalar(
             'train_mean_loss_{}'.format(self.name),
             train_mean_loss
         )
@@ -365,7 +379,7 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
             result,
             metadata,
             experiment_dir_name,
-            skip_save_unprocessed_output=False
+            skip_save_unprocessed_output=False,
     ):
         postprocessed = {}
         npy_filename = os.path.join(experiment_dir_name, '{}_{}.npy')
@@ -397,14 +411,18 @@ class BinaryOutputFeature(BinaryBaseFeature, OutputFeature):
             output_feature,
             LOSS,
             {
-                'threshold': 0.5,
                 'robust_lambda': 0,
                 'confidence_penalty': 0,
+                'positive_class_weight': 1,
                 'weight': 1
             }
         )
-        set_default_value(output_feature, 'threshold', 0.5)
-        set_default_value(output_feature, 'dependencies', [])
-        set_default_value(output_feature, 'weight', 1)
-        set_default_value(output_feature, 'reduce_input', SUM)
-        set_default_value(output_feature, 'reduce_dependencies', SUM)
+        set_default_values(
+            output_feature,
+            {
+                'threshold': 0.5,
+                'dependencies': [],
+                'reduce_input': SUM,
+                'reduce_dependencies': SUM
+            }
+        )

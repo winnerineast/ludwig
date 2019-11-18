@@ -73,38 +73,60 @@ def match_replace(string_to_match, list_regex):
     return string_to_match, matched
 
 
+def load_vocabulary(vocab_file):
+    with open(vocab_file, 'r') as f:
+        vocabulary = []
+        for line in f:
+            line = line.strip()
+            if ' ' in line:
+                line = line.split(' ')[0]
+            vocabulary.append(line)
+        return vocabulary
+        #return [line.strip() for line in f]
+
+
 def create_vocabulary(
-    data,
-    tokenizer_type='space',
-    custom_vocabulary=(),
-    add_unknown=True,
-    add_padding=True,
-    lowercase=True,
-    num_most_frequent=None,
-    vocab_file=None
+        data,
+        tokenizer_type='space',
+        add_unknown=True,
+        add_padding=True,
+        lowercase=True,
+        num_most_frequent=None,
+        vocab_file=None,
+        unknown_symbol=UNKNOWN_SYMBOL,
+        padding_symbol=PADDING_SYMBOL
 ):
+    vocab = None
     max_line_length = 0
     unit_counts = Counter()
 
-    if tokenizer_type == 'custom':
-        vocab = sorted(list(set(custom_vocabulary)))
-    else:
-        tokenizer = get_from_registry(
-            tokenizer_type,
-            tokenizer_registry
-        )(vocab_file=vocab_file)
-        for line in data:
-            processed_line = tokenizer(line.lower() if lowercase else line)
-            unit_counts.update(processed_line)
-            max_line_length = max(max_line_length, len(processed_line))
+    if tokenizer_type == 'bert':
+        vocab = load_vocabulary(vocab_file)
+        add_unknown = False
+        add_padding = False
+    elif vocab_file is not None:
+        vocab = load_vocabulary(vocab_file)
 
+    tokenizer = get_from_registry(
+        tokenizer_type,
+        tokenizer_registry
+    )(vocab_file=vocab_file)
+    for line in data:
+        processed_line = tokenizer(line.lower() if lowercase else line)
+        unit_counts.update(processed_line)
+        max_line_length = max(max_line_length, len(processed_line))
+
+    if vocab is None:
         vocab = [unit for unit, count in
                  unit_counts.most_common(num_most_frequent)]
 
+    vocab_set = set(vocab)
     if add_unknown:
-        vocab = [UNKNOWN_SYMBOL] + vocab
+        if unknown_symbol not in vocab_set:
+            vocab = [unknown_symbol] + vocab
     if add_padding:
-        vocab = [PADDING_SYMBOL] + vocab
+        if padding_symbol not in vocab_set:
+            vocab = [padding_symbol] + vocab
 
     str2idx = {unit: i for i, unit in enumerate(vocab)}
     str2freq = {unit: unit_counts.get(unit) if unit in unit_counts else 0 for
@@ -126,11 +148,12 @@ def get_sequence_vector(sequence, tokenizer_type, unit_to_id, lowercase=True):
 
 
 def _get_sequence_vector(
-    sequence,
-    tokenizer,
-    format_dtype,
-    unit_to_id,
-    lowercase=True
+        sequence,
+        tokenizer,
+        format_dtype,
+        unit_to_id,
+        lowercase=True,
+        unknown_symbol=UNKNOWN_SYMBOL
 ):
     unit_sequence = tokenizer(
         sequence.lower() if lowercase else sequence
@@ -141,19 +164,20 @@ def _get_sequence_vector(
         if curr_unit in unit_to_id:
             unit_indices_vector[i] = unit_to_id[curr_unit]
         else:
-            unit_indices_vector[i] = unit_to_id[UNKNOWN_SYMBOL]
+            unit_indices_vector[i] = unit_to_id[unknown_symbol]
     return unit_indices_vector
 
 
 def build_sequence_matrix(
-    sequences,
-    inverse_vocabulary,
-    tokenizer_type,
-    length_limit,
-    padding_symbol,
-    padding='right',
-    lowercase=True,
-    tokenizer_vocab_file=None,
+        sequences,
+        inverse_vocabulary,
+        tokenizer_type,
+        length_limit,
+        padding_symbol,
+        padding='right',
+        unknown_symbol=UNKNOWN_SYMBOL,
+        lowercase=True,
+        tokenizer_vocab_file=None,
 ):
     tokenizer = get_from_registry(tokenizer_type, tokenizer_registry)(
         vocab_file=tokenizer_vocab_file
@@ -168,7 +192,8 @@ def build_sequence_matrix(
             tokenizer,
             format_dtype,
             inverse_vocabulary,
-            lowercase=lowercase
+            lowercase=lowercase,
+            unknown_symbol=unknown_symbol
         )
         unit_vectors.append(unit_indices_vector)
         if len(unit_indices_vector) > max_length:
@@ -668,9 +693,113 @@ class GreekLemmatizeRemoveStopwordsFilterTokenizer(BaseTokenizer):
         )
 
 
+class NorwegianTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(text, load_nlp_pipeline('nb'))
+
+
+class NorwegianFilterTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('nb'),
+            filter_numbers=True,
+            filter_punctuation=True,
+            filter_short_tokens=True
+        )
+
+
+class NorwegianRemoveStopwordsTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('nb'),
+            filter_stopwords=True
+        )
+
+
+class NorwegianLemmatizeTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(text, load_nlp_pipeline('nb'), return_lemma=True)
+
+
+class NorwegianLemmatizeFilterTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('nb'),
+            return_lemma=True,
+            filter_numbers=True,
+            filter_punctuation=True,
+            filter_short_tokens=True
+        )
+
+
+class NorwegianLemmatizeRemoveStopwordsFilterTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('nb'),
+            return_lemma=True,
+            filter_stopwords=True
+        )
+
+class LithuanianTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(text, load_nlp_pipeline('lt'))
+
+
+class LithuanianFilterTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('lt'),
+            filter_numbers=True,
+            filter_punctuation=True,
+            filter_short_tokens=True
+        )
+
+
+class LithuanianRemoveStopwordsTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('lt'),
+            filter_stopwords=True
+        )
+
+
+class LithuanianLemmatizeTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(text, load_nlp_pipeline('lt'), return_lemma=True)
+
+
+class LithuanianLemmatizeFilterTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('lt'),
+            return_lemma=True,
+            filter_numbers=True,
+            filter_punctuation=True,
+            filter_short_tokens=True
+        )
+
+
+class LithuanianLemmatizeRemoveStopwordsFilterTokenizer(BaseTokenizer):
+    def __call__(self, text):
+        return process_text(
+            text,
+            load_nlp_pipeline('lt'),
+            return_lemma=True,
+            filter_stopwords=True
+        )
+
 class MultiTokenizer(BaseTokenizer):
     def __call__(self, text):
         return process_text(text, load_nlp_pipeline('xx'))
+
+
 
 
 class MultiFilterTokenizer(BaseTokenizer):
@@ -728,12 +857,17 @@ class BERTTokenizer(BaseTokenizer):
                 'Vocabulary file is required to initialize BERT tokenizer'
             )
 
-        from bert.tokenization import FullTokenizer
+        try:
+            from bert.tokenization import FullTokenizer
+        except ImportError:
+            raise ValueError(
+                "Please install bert-tensorflow: pip install bert-tensorflow"
+            )
 
         self.tokenizer = FullTokenizer(vocab_file)
 
     def __call__(self, text):
-        return self.tokenizer.tokenize(text)
+        return ['[CLS]'] + self.tokenizer.tokenize(text) + ['[SEP]']
 
 
 tokenizer_registry = {
@@ -792,6 +926,18 @@ tokenizer_registry = {
     'greek_lemmatize': GreekLemmatizeTokenizer,
     'greek_lemmatize_filter': GreekLemmatizeFilterTokenizer,
     'greek_lemmatize_remove_stopwords': GreekLemmatizeRemoveStopwordsFilterTokenizer,
+    'norwegian_tokenize': NorwegianTokenizer,
+    'norwegian_tokenize_filter': NorwegianFilterTokenizer,
+    'norwegian_tokenize_remove_stopwords': NorwegianRemoveStopwordsTokenizer,
+    'norwegian_lemmatize': NorwegianLemmatizeTokenizer,
+    'norwegian_lemmatize_filter': NorwegianLemmatizeFilterTokenizer,
+    'norwegian_lemmatize_remove_stopwords': NorwegianLemmatizeRemoveStopwordsFilterTokenizer,
+    'lithuanian_tokenize': LithuanianTokenizer,
+    'lithuanian_tokenize_filter': LithuanianFilterTokenizer,
+    'lithuanian_tokenize_remove_stopwords': LithuanianRemoveStopwordsTokenizer,
+    'lithuanian_lemmatize': LithuanianLemmatizeTokenizer,
+    'lithuanian_lemmatize_filter': LithuanianLemmatizeFilterTokenizer,
+    'lithuanian_lemmatize_remove_stopwords': LithuanianLemmatizeRemoveStopwordsFilterTokenizer,
     'multi_tokenize': MultiTokenizer,
     'multi_tokenize_filter': MultiFilterTokenizer,
     'multi_tokenize_remove_stopwords': MultiRemoveStopwordsTokenizer,

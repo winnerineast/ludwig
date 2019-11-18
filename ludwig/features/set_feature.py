@@ -31,7 +31,6 @@ from ludwig.models.modules.initializer_modules import get_initializer
 from ludwig.utils.misc import set_default_value
 from ludwig.utils.strings_utils import create_vocabulary
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -41,7 +40,7 @@ class SetBaseFeature(BaseFeature):
         self.type = IMAGE
 
     preprocessing_defaults = {
-        'format': 'space',
+        'tokenizer': 'space',
         'most_common': 10000,
         'lowercase': False,
         'missing_value_strategy': FILL_WITH_CONST,
@@ -52,7 +51,7 @@ class SetBaseFeature(BaseFeature):
     def get_feature_meta(column, preprocessing_parameters):
         idx2str, str2idx, str2freq, max_size = create_vocabulary(
             column,
-            preprocessing_parameters['format'],
+            preprocessing_parameters['tokenizer'],
             num_most_frequent=preprocessing_parameters['most_common'],
             lowercase=preprocessing_parameters['lowercase']
         )
@@ -71,7 +70,7 @@ class SetBaseFeature(BaseFeature):
                 lambda x: set_str_to_idx(
                     x,
                     metadata['str2idx'],
-                    preprocessing_parameters['format']
+                    preprocessing_parameters['tokenizer']
                 )
             )
         )
@@ -132,7 +131,7 @@ class SetInputFeature(SetBaseFeature, InputFeature):
 
     def _get_input_placeholder(self):
         # None is for dealing with variable batch size
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.int32,
             shape=[None, len(self.vocab)],
             name=self.name
@@ -194,7 +193,7 @@ class SetOutputFeature(SetBaseFeature, OutputFeature):
         _ = self.overwrite_defaults(feature)
 
     def _get_output_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.bool,
             shape=[None, self.num_classes],
             name='{}_placeholder'.format(self.name)
@@ -209,16 +208,16 @@ class SetOutputFeature(SetBaseFeature, OutputFeature):
         if not self.regularize:
             regularizer = None
 
-        with tf.variable_scope('predictions_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('predictions_{}'.format(self.name)):
             initializer_obj = get_initializer(self.initializer)
-            weights = tf.get_variable(
+            weights = tf.compat.v1.get_variable(
                 'weights',
                 initializer=initializer_obj([hidden_size, self.num_classes]),
                 regularizer=regularizer
             )
             logger.debug('  class_weights: {0}'.format(weights))
 
-            biases = tf.get_variable(
+            biases = tf.compat.v1.get_variable(
                 'biases',
                 [self.num_classes]
             )
@@ -245,7 +244,7 @@ class SetOutputFeature(SetBaseFeature, OutputFeature):
             targets,
             logits
     ):
-        with tf.variable_scope('loss_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('loss_{}'.format(self.name)):
             train_loss = tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=tf.cast(targets, tf.float32),
                 logits=logits
@@ -277,6 +276,8 @@ class SetOutputFeature(SetBaseFeature, OutputFeature):
             hidden,
             hidden_size,
             regularizer=None,
+            dropout_rate=None,
+            is_training=None,
             **kwargs
     ):
         output_tensors = {}
@@ -306,7 +307,7 @@ class SetOutputFeature(SetBaseFeature, OutputFeature):
         output_tensors[EVAL_LOSS + '_' + self.name] = eval_loss
         output_tensors[TRAIN_MEAN_LOSS + '_' + self.name] = train_mean_loss
 
-        tf.summary.scalar(
+        tf.compat.v1.summary.scalar(
             'train_mean_loss_{}'.format(self.name),
             train_mean_loss
         )
@@ -367,7 +368,7 @@ class SetOutputFeature(SetBaseFeature, OutputFeature):
             result,
             metadata,
             experiment_dir_name,
-            skip_save_unprocessed_output=False
+            skip_save_unprocessed_output=False,
     ):
         postprocessed = {}
         npy_filename = os.path.join(experiment_dir_name, '{}_{}.npy')

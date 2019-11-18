@@ -6,7 +6,7 @@ Text Classification
 ===
 
 This example shows how to build a text classifier with Ludwig.
-It can be performed using the [Reuters-21578](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/reuters-allcats-6.zip) dataset, in particular the version available on [CMU's Text Analitycs course website](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/).
+It can be performed using the [Reuters-21578](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/reuters-allcats-6.zip) dataset, in particular the version available on [CMU's Text Analytics course website](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/).
 Other datasets available on the same webpage, like [OHSUMED](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/ohsumed-allcats-6.zip), is a well-known medical abstracts dataset, and [Epinions.com](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/epinions.zip), a dataset of product reviews, can be used too as the name of the columns is the same.
 
 
@@ -274,7 +274,7 @@ output_features:
 
 Image Classification (MNIST)
 ===
-This is a complete example of training an image classification model on the MNIST 
+This is a complete example of training an image classification model on the MNIST
 dataset.
 
 ## Download the MNIST dataset.
@@ -479,12 +479,147 @@ output_features:
             type: sampled_softmax_cross_entropy
 ```
 
+Spoken Digit Speech Recognition
+===
+
+This is a complete example of training an spoken digit speech recognition model on the "MNIST dataset of speech recognition". 
+
+## Download the free spoken digit dataset.
+
+```
+git clone https://github.com/Jakobovski/free-spoken-digit-dataset.git
+mkdir speech_recog_digit_data
+cp -r free-spoken-digit-dataset/recordings speech_recog_digit_data
+cd speech_recog_digit_data
+```
+
+## Create an experiment CSV.
+
+```
+echo "audio_path","label" >> "spoken_digit.csv"
+cd "recordings"
+ls | while read -r file_name; do
+   audio_path=$(readlink -m "${file_name}")
+   label=$(echo ${file_name} | cut -c1)
+   echo "${audio_path},${label}" >> "../spoken_digit.csv"
+done
+cd "../"
+```
+
+Now you should have `spoken_digit.csv` containing 2000 examples having the following format
+
+| audio_path                                              |   label                                   |
+|---------------------------------------------------------|-------------------------------------------|
+| .../speech_recog_digit_data/recordings/0_jackson_0.wav  | 0                                         |
+| .../speech_recog_digit_data/recordings/0_jackson_10.wav | 0                                         |
+| .../speech_recog_digit_data/recordings/0_jackson_11.wav | 0                                         |
+| ...                                                     | ...                                       |
+| .../speech_recog_digit_data/recordings/1_jackson_0.wav  | 1                                         |
+
+
+## Train a model. 
+
+From the directory where you have virtual environment with ludwig installed: 
+
+```
+ludwig experiment \
+  --data_csv <PATH_TO_SPOKEN_DIGIT_CSV> \
+  --model_definition_file model_definition_file.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+input_features:
+    -
+        name: audio_path
+        type: audio
+        encoder: stacked_cnn
+        preprocessing:
+            audio_feature:
+                type: fbank
+                window_length_in_s: 0.025
+                window_shift_in_s: 0.01
+                num_filter_bands: 80
+            audio_file_length_limit_in_s: 1.0
+            norm: per_file
+        reduce_output: concat
+        conv_layers:
+            -
+                num_filters: 16
+                filter_size: 6
+                pool_size: 4
+                pool_stride: 4
+                dropout: true
+            -
+                num_filters: 32
+                filter_size: 3
+                pool_size: 2
+                pool_stride: 2
+                dropout: true
+        fc_layers:
+            -
+                fc_size: 64
+                dropout: true
+
+output_features:
+    -
+        name: label
+        type: category
+
+training:
+    dropout_rate: 0.4
+    early_stop: 10
+```
+
+
+Speaker Verification
+===
+
+This example describes how to use Ludwig for a simple speaker verification task.
+We assume to have the following data with label 0 corresponding to an audio file of an unauthorized voice and
+label 1 corresponding to an audio file of an authorized voice.
+The sample data looks as follows:
+
+| audio_path                 |   label                                   |
+|----------------------------|-------------------------------------------|
+| audiodata/audio_000001.wav | 0                                         |
+| audiodata/audio_000002.wav | 0                                         |
+| audiodata/audio_000003.wav | 1                                         |
+| audiodata/audio_000004.wav | 1                                         |
+
+```
+ludwig experiment \
+--data_csv speaker_verification.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+input_features:
+    -
+        name: audio_path
+        type: audio
+        preprocessing:
+            audio_file_length_limit_in_s: 7.0
+            audio_feature:
+                type: stft
+                window_length_in_s: 0.04
+                window_shift_in_s: 0.02
+        encoder: cnnrnn
+
+output_features:
+    -
+        name: label
+        type: binary
+```
 
 
 Kaggle's Titanic: Predicting survivors
 ===
 
-This example describes how to use Ludwig to train a model for the 
+This example describes how to use Ludwig to train a model for the
 [kaggle competition](https://www.kaggle.com/c/titanic/), on predicting a passenger's probability of surviving the Titanic
 disaster. Here's a sample of the data:
 
@@ -495,7 +630,7 @@ disaster. Here's a sample of the data:
 | 3      | female | 26  | 0     | 0     |  7.9250 | 0        | S        |
 | 3      | male   | 35  | 0     | 0     |  8.0500 | 0        | S        |
 
-The full data and the column descriptions can be found [here](https://www.kaggle.com/c/titanic/data). 
+The full data and the column descriptions can be found [here](https://www.kaggle.com/c/titanic/data).
 
 After downloading the data, to train a model on this dataset using Ludwig,
 ```
@@ -647,10 +782,11 @@ input_features:
     -
         name: temperature_feature
         type: timeseries
-        encoder: rnn  
+        encoder: rnn
         embedding_size: 32
         state_size: 32
- output_features:
+
+output_features:
     -
         name: temperature
         type: numerical
@@ -688,7 +824,7 @@ input_features:
     -
         name: categories
         type: set
-        
+
 output_features:
     -
         name: rating

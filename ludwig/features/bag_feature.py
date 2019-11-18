@@ -28,7 +28,6 @@ from ludwig.models.modules.embedding_modules import EmbedWeighted
 from ludwig.utils.misc import set_default_value
 from ludwig.utils.strings_utils import create_vocabulary
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +37,7 @@ class BagBaseFeature(BaseFeature):
         self.type = BAG
 
     preprocessing_defaults = {
-        'format': 'space',
+        'tokenizer': 'space',
         'most_common': 10000,
         'lowercase': False,
         'missing_value_strategy': FILL_WITH_CONST,
@@ -49,7 +48,7 @@ class BagBaseFeature(BaseFeature):
     def get_feature_meta(column, preprocessing_parameters):
         idx2str, str2idx, str2freq, max_size = create_vocabulary(
             column,
-            preprocessing_parameters['format'],
+            preprocessing_parameters['tokenizer'],
             num_most_frequent=preprocessing_parameters['most_common'],
             lowercase=preprocessing_parameters['lowercase']
         )
@@ -73,7 +72,7 @@ class BagBaseFeature(BaseFeature):
             col_counter = Counter(set_str_to_idx(
                 column[i],
                 metadata['str2idx'],
-                preprocessing_parameters['format'])
+                preprocessing_parameters['tokenizer'])
             )
             bag_matrix[i, list(col_counter.keys())] = list(col_counter.values())
 
@@ -125,7 +124,7 @@ class BagInputFeature(BagBaseFeature, InputFeature):
 
     def _get_input_placeholder(self):
         # None dimension is for dealing with variable batch size
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.float32,
             shape=[None, len(self.vocab)],
             name=self.name
